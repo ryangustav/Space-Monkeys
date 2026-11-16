@@ -129,7 +129,7 @@ def cells_in_geometry(geometry: dict, max_cells: int) -> np.ndarray:
 
 
 class HistoryStore:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, memory_limit: str | None = None, threads: int | None = None):
         self.data_dir = Path(data_dir)
         meta_path = self.data_dir / "meta.json"
         if not meta_path.exists():
@@ -137,6 +137,10 @@ class HistoryStore:
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
         self.limits = self.meta["limits"]
         self.con = duckdb.connect()
+        if memory_limit:
+            self.con.execute(f"SET memory_limit = '{memory_limit}'")
+        if threads:
+            self.con.execute(f"SET threads = {int(threads)}")
         cell_day = (self.data_dir / "cell_day").as_posix()
         self.con.execute(
             "CREATE VIEW cell_day AS SELECT * FROM "

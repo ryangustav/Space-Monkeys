@@ -58,7 +58,11 @@ async def lifespan(app: FastAPI):
     app.state.broker = PulseBroker()
     app.state.history = None
     if (settings.history_data_dir / "meta.json").exists():
-        app.state.history = HistoryStore(settings.history_data_dir)
+        app.state.history = HistoryStore(
+            settings.history_data_dir,
+            memory_limit=settings.history_memory_limit,
+            threads=settings.history_threads,
+        )
         if settings.history_warm_up:
             # Load biome and country series in the background so first requests are fast.
             threading.Thread(target=_warm, args=(app.state.history,), daemon=True).start()

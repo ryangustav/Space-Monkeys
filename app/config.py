@@ -48,7 +48,10 @@ class Settings(BaseSettings):
     # Burning activity calendar: folder written by `python -m pipeline.serving`
     history_data_dir: Path = Path("data/processed/brazil/serving")
     # Cache the daily series of every biome and of Brazil in the background at start-up.
-    history_warm_up: bool = True
+    history_warm_up: bool = False
+    # DuckDB would otherwise size itself to the host RAM, not the 1 GB container.
+    history_memory_limit: str = "400MB"
+    history_threads: int = Field(default=2, ge=1)
 
     # Fire forecast (U-Net, see notebooks/fire_forecast_base.py)
     enable_forecast: bool = True
