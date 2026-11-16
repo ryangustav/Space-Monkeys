@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api import docs, forecast, history, live, system
 from app.config import get_settings, redact
@@ -109,6 +110,9 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+    # Map and calendar answers are large JSON (tens of thousands of cells): gzip them.
+    # Starlette never compresses text/event-stream, so the SSE pulse is untouched.
+    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
     app.include_router(system.router)
     app.include_router(live.router)
     app.include_router(history.router)
