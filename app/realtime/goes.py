@@ -38,6 +38,8 @@ MASK_CONFIDENCE = {
     15: 0.3,  # low probability fire pixel
 }
 MASK_CONFIDENCE.update({code + 20: conf for code, conf in MASK_CONFIDENCE.items()})
+# The fire mask is scanned in bands of rows so a full disk never sits in memory at once.
+MASK_BAND_ROWS = 512
 
 _START_RE = re.compile(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})")
 
@@ -146,22 +148,51 @@ def parse_fdc(
     bbox: tuple[float, float, float, float],
     min_confidence: float = 0.5,
 ) -> pd.DataFrame:
-    """Extract fire pixels from one FDC NetCDF file into the common detections table."""
-    with xr.open_dataset(io.BytesIO(data), engine="h5netcdf") as ds:
-        mask = ds["Mask"].values
-        fire = np.isin(mask, list(MASK_CONFIDENCE))
-        iy, ix = np.nonzero(fire)
-        if iy.size == 0:
-            return detections.empty()
+    """Extract fire pixels from one FDC NetCDF file into the common detections table.
 
+    Memory: a full-disk grid is 5424 × 5424. Decoded by xarray, each 2D variable becomes
+    a float64 array of about 235 MB, enough to push a 1 GB server out of memory. So the
+    mask is read raw (int16, ~59 MB, it has no scale), fire pixels outside the area are
+    dropped from their coordinates alone, and Power is read only in the window that
+    holds the remaining pixels."""
+    fire_codes = np.array(list(MASK_CONFIDENCE))
+    rows, cols, found = [], [], []
+    with xr.open_dataset(io.BytesIO(data), engine="h5netcdf", mask_and_scale=False) as raw:
+        band = raw["Mask"]
+        for r in range(0, band.shape[0], MASK_BAND_ROWS):
+            mask = band[r : r + MASK_BAND_ROWS].values
+            by, bx = np.nonzero(np.isin(mask, fire_codes))
+            rows.append(by + r)
+            cols.append(bx)
+            found.append(mask[by, bx])
+    iy, ix = np.concatenate(rows), np.concatenate(cols)
+    codes = np.concatenate(found).astype(int)
+    if iy.size == 0:
+        return detections.empty()
+
+    with xr.open_dataset(io.BytesIO(data), engine="h5netcdf") as ds:
         x_all = ds["x"].values.astype("float64")
         y_all = ds["y"].values.astype("float64")
         proj = dict(ds["goes_imager_projection"].attrs)
-        codes = mask[iy, ix].astype(int)
-        power = ds["Power"].values[iy, ix].astype("float64")
+        lat, lon = fixed_grid_to_latlon(x_all[ix], y_all[iy], proj)
+        w, s, e, n = bbox
+        confidence = np.array([MASK_CONFIDENCE[c] for c in codes])
+        keep = (
+            np.isfinite(lat)
+            & (lat >= s)
+            & (lat <= n)
+            & (lon >= w)
+            & (lon <= e)
+            & (confidence >= min_confidence)
+        )
+        if not keep.any():
+            return detections.empty()
+        iy, ix, codes, lat, lon = iy[keep], ix[keep], codes[keep], lat[keep], lon[keep]
+        r0, c0 = int(iy.min()), int(ix.min())
+        window = ds["Power"][r0 : int(iy.max()) + 1, c0 : int(ix.max()) + 1].values
+        power = window[iy - r0, ix - c0].astype("float64")
 
     x, y = x_all[ix], y_all[iy]
-    lat, lon = fixed_grid_to_latlon(x, y, proj)
     dx = float(abs(x_all[1] - x_all[0]))
     dy = float(abs(y_all[1] - y_all[0]))
     scan_km, track_km = pixel_footprint_km(x, y, dx, dy, proj)
