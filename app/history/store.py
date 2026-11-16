@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -138,7 +139,11 @@ class HistoryStore:
         self.limits = self.meta["limits"]
         self.con = duckdb.connect()
         if memory_limit:
+            # Past the limit DuckDB spills to disk instead of failing or growing.
+            spill = (Path(tempfile.gettempdir()) / "history_duckdb").as_posix()
             self.con.execute(f"SET memory_limit = '{memory_limit}'")
+            self.con.execute(f"SET temp_directory = '{spill}'")
+            self.con.execute("SET preserve_insertion_order = false")
         if threads:
             self.con.execute(f"SET threads = {int(threads)}")
         cell_day = (self.data_dir / "cell_day").as_posix()
