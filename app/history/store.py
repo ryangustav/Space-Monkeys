@@ -27,6 +27,7 @@ from app.history.analytics import Coverage
 N_COLS = 3600  # 0.1° columns around the globe
 CELLS_PER_DEGREE = 10
 MAX_STORED_AREAS = 256
+MAX_CACHED_MAPS = 64  # per-cell map answers kept in memory (one row per cell)
 MAX_CACHED_SERIES = 32  # full-record daily series kept in memory, per area
 LONG_REQUEST_DAYS = 730  # longer requests load (and cache) the area's whole record
 COUNTRIES = {"BR": "Brazil"}  # cells labelled with any IBGE biome are Brazil
@@ -167,6 +168,7 @@ class HistoryStore:
         # One heavy scan at a time: concurrent requests (the frontend asks for one map per
         # year in parallel) would otherwise share DuckDB's memory limit and run it out.
         self._scan_lock = threading.Lock()
+        self._cells: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
         cov = self.coverage
         ends = [cov.modis[1], cov.viirs[1]] + ([cov.estimate[1]] if cov.estimate else [])
         self.record = (min(cov.modis[0], cov.viirs[0]), max(ends))
@@ -378,8 +380,25 @@ class HistoryStore:
     def per_cell(self, area: Area, start: date, end: date) -> pd.DataFrame:
         """Per cell with any fire in [start, end]: modis and viirs observed counts and the
         harmonized value (MODIS days before the switch, estimate days after)."""
+        key = (area.predicate, start, end)
+        with self._series_lock:
+            hit = self._cells.get(key)
+            if hit is not None:
+                self._cells.move_to_end(key)
+                return hit
         with self._scan_lock:
-            return self._per_cell(area, start, end)
+            frame = self._per_cell(area, start, end)
+        with self._series_lock:  # small (one row per cell); repeat maps answer at once
+            self._cells[key] = frame
+            while len(self._cells) > MAX_CACHED_MAPS:
+                self._cells.popitem(last=False)
+        return frame
+
+    def warm_map(self) -> None:
+        """Compute the frontend's default map (Brazil, whole record) in the background, so
+        the first visitor does not wait for a scan of every cell-day."""
+        cov = self.coverage
+        self.per_cell(self.area_from_country("BR"), cov.viirs[0], self.record[1])
 
     def _per_cell(self, area: Area, start: date, end: date) -> pd.DataFrame:
         cov = self.coverage

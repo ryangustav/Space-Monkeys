@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
             memory_limit=settings.history_memory_limit,
             threads=settings.history_threads,
         )
+        threading.Thread(target=app.state.history.warm_map, daemon=True).start()
         if settings.history_warm_up:
             # Load biome and country series in the background so first requests are fast.
             threading.Thread(target=_warm, args=(app.state.history,), daemon=True).start()
