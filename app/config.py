@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     firms_sources: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: list(DEFAULT_FIRMS_SOURCES)
     )
-    firms_day_range: int = Field(default=1, ge=1, le=5)
+    firms_day_range: int = Field(default=2, ge=1, le=5)
 
     # NOAA GOES-R ABI L2 Fire/Hot Spot Characterization, Full Disk (public AWS bucket)
     goes_bucket: str = "noaa-goes19"
