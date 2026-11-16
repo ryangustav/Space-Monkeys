@@ -164,6 +164,9 @@ class HistoryStore:
         self.coverage = self._coverage()
         self._series: OrderedDict[str, pd.DataFrame] = OrderedDict()
         self._series_lock = threading.Lock()
+        # One heavy scan at a time: concurrent requests (the frontend asks for one map per
+        # year in parallel) would otherwise share DuckDB's memory limit and run it out.
+        self._scan_lock = threading.Lock()
         cov = self.coverage
         ends = [cov.modis[1], cov.viirs[1]] + ([cov.estimate[1]] if cov.estimate else [])
         self.record = (min(cov.modis[0], cov.viirs[0]), max(ends))
@@ -350,7 +353,15 @@ class HistoryStore:
 
     def _query_daily(self, area: Area, start: date, end: date) -> pd.DataFrame:
         """Area sums per day, straight from the serving table (see `daily`)."""
-        rows = (
+        with self._scan_lock:
+            rows = self._daily_rows(area, start, end)
+        idx = pd.date_range(start, end, freq="D")
+        rows["date"] = pd.to_datetime(rows["date"])
+        frame = rows.set_index("date").reindex(idx, fill_value=0)
+        return frame.astype({"modis": float, "viirs": float, "est": float, "fine": float})
+
+    def _daily_rows(self, area: Area, start: date, end: date) -> pd.DataFrame:
+        return (
             self.con.cursor()
             .execute(f"""
             SELECT date, sum(modis) AS modis, sum(viirs) AS viirs, coalesce(sum(est), 0) AS est,
@@ -363,14 +374,14 @@ class HistoryStore:
         """)
             .fetchdf()
         )
-        idx = pd.date_range(start, end, freq="D")
-        rows["date"] = pd.to_datetime(rows["date"])
-        frame = rows.set_index("date").reindex(idx, fill_value=0)
-        return frame.astype({"modis": float, "viirs": float, "est": float, "fine": float})
 
     def per_cell(self, area: Area, start: date, end: date) -> pd.DataFrame:
         """Per cell with any fire in [start, end]: modis and viirs observed counts and the
         harmonized value (MODIS days before the switch, estimate days after)."""
+        with self._scan_lock:
+            return self._per_cell(area, start, end)
+
+    def _per_cell(self, area: Area, start: date, end: date) -> pd.DataFrame:
         cov = self.coverage
         m_end = cov.harmonized_modis_end().isoformat()
         e0, e1 = cov.estimate if cov.estimate else (date.max, date.min)
